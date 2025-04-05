@@ -2,7 +2,7 @@
 
 from flask import Flask
 from routes.main_routes import main_bp
-from routes.audit_routes import audit_bp
+from routes.audit import audit_bp  # Importa el blueprint desde routes/audit/__init__.py
 
 app = Flask(__name__)
 
