@@ -236,17 +236,20 @@ def show_home():
     with col1:
         if st.button("📥 Importar Datos", use_container_width=True):
             st.session_state.menu = "Importación de Datos"
-            st.experimental_rerun()
+            st.rerun()
+
     
     with col2:
         if st.button("📊 Ver Informes", use_container_width=True):
             st.session_state.menu = "Generación de Informes"
-            st.experimental_rerun()
+            st.rerun()
+
     
     with col3:
         if st.button("📝 Auditar Facturas en Papel", use_container_width=True):
             st.session_state.menu = "Facturas en Papel"
-            st.experimental_rerun()
+            st.rerun()
+
 
 # Función para mostrar la página de importación de datos
 def show_importacion_datos():
