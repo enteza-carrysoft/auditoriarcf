@@ -2,3 +2,8 @@ streamlit
 matplotlib
 pandas
 numpy
+seaborn
+xlsxwriter
+plotly
+supabase
+
