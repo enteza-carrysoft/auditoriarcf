@@ -155,6 +155,8 @@ def success_box(title, content):
 # Función principal para la aplicación
 def main():
     # Barra lateral con navegación
+    logo = Image.open("logo.png")
+    st.sidebar.image(logo, use_container_width=True)
     st.sidebar.markdown("# Auditoría de Facturas")
     menu = st.sidebar.selectbox(
         "Seleccione una sección",
