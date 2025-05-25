@@ -1,82 +1,126 @@
-# pages/anotacion_rcf.py
-
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-from components.boxes import info_box, success_box
-from components.downloads import download_excel
-from components.charts import create_line_chart
-import plotly.express as px
+from datetime import datetime, timedelta
+import requests
+import json
+import plotly.express as px # For histogram
+from ..ui_utils import info_box, warning_box, success_box, download_excel
+from ..config import API_URL_ANOTACION
 
 def show_anotacion_rcf():
     st.markdown('<h1 class="main-header">Auditoría de Anotación en RCF</h1>', unsafe_allow_html=True)
     
     info_box(
         "Información",
-        "Esta sección permite verificar la correcta anotación de las facturas en el Registro Contable de Facturas."
+        "Esta sección permite verificar la correcta anotación de las facturas electrónicas en el Registro Contable de Facturas (RCF) y analizar los tiempos de procesamiento."
     )
-    
-    # Selector de fecha y botón de actualización
-    col1, col2, col3 = st.columns([2, 2, 3])
+
+    # Initialize session state variables
+    if 'anotacion_data' not in st.session_state:
+        st.session_state.anotacion_data = {}
+    if 'df_tiempos_detalle_api' not in st.session_state:
+        st.session_state.df_tiempos_detalle_api = pd.DataFrame()
+    if 'df_no_anotadas_api' not in st.session_state:
+        st.session_state.df_no_anotadas_api = pd.DataFrame()
+    if 'last_update_anotacion' not in st.session_state:
+        st.session_state.last_update_anotacion = "N/A"
+
+    # Date inputs and update button
+    col1, col2, col3 = st.columns([1,1,1])
     with col1:
-        st.selectbox("Seleccionar fecha", ["Fecha actual", "Datos históricos"], key="fecha_tipo_rcf")
+        fecha_inicio_input_rcf = st.date_input("Fecha Inicio", datetime.now() - timedelta(days=30), key="arcf_fecha_inicio")
     with col2:
-        if st.button("Actualizar datos", key="actualizar_rcf"):
-            st.session_state.datos_actualizados_rcf = True
+        fecha_fin_input_rcf = st.date_input("Fecha Fin", datetime.now(), key="arcf_fecha_fin")
     with col3:
-        st.markdown(
-            '<div style="text-align: right;"><span style="background-color: #E5E7EB; padding: 0.5rem; border-radius: 0.5rem; font-size: 0.9rem;">Última actualización: 05/04/2025</span></div>',
-            unsafe_allow_html=True
-        )
+        if st.button("Actualizar datos", key="arcf_actualizar_rcf", use_container_width=True, type="primary"):
+            fecha_inicio_str = fecha_inicio_input_rcf.strftime("%Y-%m-%d")
+            fecha_fin_str = fecha_fin_input_rcf.strftime("%Y-%m-%d")
+            
+            payload = {"fecha_inicio": fecha_inicio_str, "fecha_fin": fecha_fin_str}
+            
+            try:
+                response = requests.post(API_URL_ANOTACION, json=payload, timeout=20)
+                response.raise_for_status()
+                
+                api_data = response.json()
+                st.session_state.anotacion_data = api_data
+                
+                tiempos_anotacion_stats = api_data.get("tiempos_anotacion", {})
+                detalle_tiempos = tiempos_anotacion_stats.get("detalle", [])
+                if detalle_tiempos: # Ensure there's data before creating DataFrame
+                    st.session_state.df_tiempos_detalle_api = pd.DataFrame(detalle_tiempos, columns=["Tiempo de Anotación (minutos)"])
+                else:
+                    st.session_state.df_tiempos_detalle_api = pd.DataFrame(columns=["Tiempo de Anotación (minutos)"]) # Empty DataFrame with column
+
+                facturas_sin_fechas_ids = api_data.get("facturas_sin_fechas", [])
+                if facturas_sin_fechas_ids: # Ensure there's data
+                    st.session_state.df_no_anotadas_api = pd.DataFrame(facturas_sin_fechas_ids, columns=["ID Factura"])
+                else:
+                    st.session_state.df_no_anotadas_api = pd.DataFrame(columns=["ID Factura"]) # Empty DataFrame with column
+                
+                st.session_state.last_update_anotacion = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                success_box(f"Datos actualizados.", f"{api_data.get('total_facturas_electronicas_analizadas', 0)} facturas electrónicas analizadas.")
+
+            except requests.exceptions.Timeout:
+                st.error("Error: Timeout al contactar el backend. Intente nuevamente.")
+            except requests.exceptions.HTTPError as e:
+                st.error(f"Error al contactar el backend: {e.response.status_code} - {e.response.text}")
+            except requests.exceptions.RequestException as e:
+                st.error(f"Error de conexión: No se pudo conectar al backend. ({e})")
+            except json.JSONDecodeError:
+                st.error("Error: La respuesta del backend no es un JSON válido.")
+            except Exception as e:
+                st.error(f"Ocurrió un error inesperado: {str(e)}")
+                st.session_state.anotacion_data = {} 
+                st.session_state.df_tiempos_detalle_api = pd.DataFrame()
+                st.session_state.df_no_anotadas_api = pd.DataFrame()
+
+    st.markdown(f'<div style="text-align: right; margin-bottom:1rem;"><span style="background-color: #E5E7EB; padding: 0.5rem; border-radius: 0.5rem; font-size: 0.9rem;">Última actualización: {st.session_state.last_update_anotacion}</span></div>', unsafe_allow_html=True)
     
-    # Pestañas para análisis
-    tab1, tab2, tab3 = st.tabs(["Custodia de facturas", "Tiempos medios de anotación", "Facturas no anotadas en RCF"])
+    tab1, tab2, tab3 = st.tabs([
+        "Custodia de facturas", 
+        "Tiempos medios de anotación", 
+        "Facturas no anotadas en RCF"
+    ])
     
     with tab1:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric(label="Total facturas", value="100")
-            st.metric(label="Facturas comprobadas", value="20")
-        with col2:
-            st.metric(label="Facturas con errores", value="0")
-            st.metric(label="Porcentaje de errores", value="0%")
-        success_box(
-            "Resultado de la auditoría de custodia",
-            "No se han detectado errores en la custodia de facturas. Se cumple correctamente con la normativa."
-        )
+        st.markdown('<h2 class="subsection-header">Custodia de facturas</h2>', unsafe_allow_html=True)
+        warning_box("Información no disponible", "Datos de custodia de facturas no disponibles desde este endpoint del backend.")
     
     with tab2:
-        # Datos de ejemplo para tiempos de anotación
-        meses = ['Enero', 'Febrero', 'Marzo', 'Abril']
-        tiempos_medios = [120, 100, 90, 80]
-        tiempos_minimos = [30, 25, 20, 15]
-        tiempos_maximos = [240, 210, 180, 150]
-        df_tiempos = pd.DataFrame({
-            'Mes': meses, 
-            'Tiempo Medio (minutos)': tiempos_medios,
-            'Tiempo Mínimo (minutos)': tiempos_minimos,
-            'Tiempo Máximo (minutos)': tiempos_maximos
-        })
+        st.markdown('<h2 class="subsection-header">Tiempos medios de anotación</h2>', unsafe_allow_html=True)
+        tiempos_data = st.session_state.anotacion_data.get("tiempos_anotacion", {})
         
-        st.plotly_chart(
-            create_line_chart(df_tiempos, 'Mes', 'Tiempo Medio (minutos)', 
-                              'Evolución de tiempos medios de anotación', 'Mes', 'Tiempo Medio (minutos)'),
-            use_container_width=True
-        )
-        st.dataframe(df_tiempos)
-        st.markdown(download_excel(df_tiempos, "tiempos_anotacion"), unsafe_allow_html=True)
-    
+        col_metric1, col_metric2, col_metric3 = st.columns(3)
+        with col_metric1:
+            promedio = tiempos_data.get('promedio_minutos')
+            st.metric(label="Promedio (minutos)", value=f"{promedio:.2f}" if isinstance(promedio, (int, float)) else "N/A")
+        with col_metric2:
+            minimo = tiempos_data.get('minimo_minutos')
+            st.metric(label="Mínimo (minutos)", value=f"{minimo:.2f}" if isinstance(minimo, (int, float)) else "N/A")
+        with col_metric3:
+            maximo = tiempos_data.get('maximo_minutos')
+            st.metric(label="Máximo (minutos)", value=f"{maximo:.2f}" if isinstance(maximo, (int, float)) else "N/A")
+
+        if not st.session_state.df_tiempos_detalle_api.empty:
+            st.markdown("### Distribución de Tiempos de Anotación")
+            fig_hist_tiempos = px.histogram(st.session_state.df_tiempos_detalle_api, x="Tiempo de Anotación (minutos)",
+                                            title="Distribución de Tiempos de Anotación en RCF",
+                                            labels={"Tiempo de Anotación (minutos)": "Tiempo (minutos)"})
+            fig_hist_tiempos.update_layout(yaxis_title="Cantidad de Facturas")
+            st.plotly_chart(fig_hist_tiempos, use_container_width=True)
+            
+            st.markdown("### Detalle de Tiempos de Anotación (minutos)")
+            st.dataframe(st.session_state.df_tiempos_detalle_api)
+            st.markdown(download_excel(st.session_state.df_tiempos_detalle_api, "detalle_tiempos_anotacion_rcf"), unsafe_allow_html=True)
+        else:
+            st.info("No hay datos detallados de tiempos de anotación disponibles para el periodo seleccionado.")
+
     with tab3:
-        # Datos de ejemplo para facturas no anotadas
-        df_no_anotadas = pd.DataFrame({
-            "Número Factura": ["F2025-004", "F2025-005"],
-            "NIF Emisor": ["B12345678", "A87654321"],
-            "Razón Social": ["Empresa A", "Empresa B"],
-            "Fecha Emisión": ["04/04/2025", "05/04/2025"],
-            "Importe": [1200.00, 3500.50],
-            "Fecha Registro FACe": ["04/04/2025", "05/04/2025"],
-            "Días Pendientes": [1, 0]
-        })
-        st.write("Facturas registradas en FACe pero no anotadas en RCF:")
-        st.dataframe(df_no_anotadas)
-        st.markdown(download_excel(df_no_anotadas, "facturas_no_anotadas"), unsafe_allow_html=True)
+        st.markdown('<h2 class="subsection-header">Facturas electrónicas con fechas faltantes para cálculo de tiempo de anotación</h2>', unsafe_allow_html=True)
+        if not st.session_state.df_no_anotadas_api.empty:
+            st.info("Se listan los IDs de las facturas para las cuales no se pudo calcular el tiempo de anotación por falta de fechas (presentación o registro RCF).")
+            st.dataframe(st.session_state.df_no_anotadas_api)
+            st.markdown(download_excel(st.session_state.df_no_anotadas_api, "facturas_sin_fechas_anotacion_rcf"), unsafe_allow_html=True)
+        else:
+            st.info("No se encontraron facturas con fechas faltantes para el periodo seleccionado, o no se han cargado datos.")

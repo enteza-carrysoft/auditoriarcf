@@ -5,6 +5,7 @@ from config import supabase
 from datetime import datetime
 import traceback
 import requests
+from .utils import parse_date_range, find_potential_duplicate_paper_invoices # Import the new utility functions
 
 audit_bp = Blueprint('audit', __name__)
 
@@ -19,19 +20,14 @@ def auditar_facturas_papel():
 
     try:
         data = request.get_json()
-        if not data or 'fecha_inicio' not in data or 'fecha_fin' not in data:
-            return jsonify({"error": "Faltan parámetros 'fecha_inicio' o 'fecha_fin' en el cuerpo JSON"}), 400
-
+        # Use parse_date_range for date validation
+        fecha_inicio, fecha_fin, error_response, error_code = parse_date_range(data)
+        if error_response:
+            return error_response, error_code
+        
+        # fecha_inicio_str and fecha_fin_str are still needed for Supabase queries
         fecha_inicio_str = data['fecha_inicio']
         fecha_fin_str = data['fecha_fin']
-
-        try:
-            fecha_inicio = datetime.strptime(fecha_inicio_str, '%Y-%m-%d').date()
-            fecha_fin = datetime.strptime(fecha_fin_str, '%Y-%m-%d').date()
-            if fecha_inicio > fecha_fin:
-                return jsonify({"error": "La fecha de inicio no puede ser posterior a la fecha de fin"}), 400
-        except ValueError:
-            return jsonify({"error": "Formato de fecha inválido. Usar YYYY-MM-DD"}), 400
 
         query_facturas_papel = supabase.table('facturas')\
             .select('id, numero_factura, proveedor_nif, fecha_factura, fecha_presentacion_registro, fecha_registro_rcf')\
@@ -106,45 +102,8 @@ def auditar_facturas_papel():
         resultados["v1_2_sin_fecha_presentacion"] = facturas_sin_fecha_presentacion_ids
         resultados["v1_2_sin_fecha_registro_rcf"] = facturas_sin_fecha_registro_ids
 
-        # Duplicidad
-        claves_vistas = {}
-        ids_duplicados = set()
-
-        for f in facturas_papel:
-            factura_id = f.get('id')
-            nif = f.get('proveedor_nif')
-            num = f.get('numero_factura')
-            fecha_f_str = f.get('fecha_factura')
-            if not factura_id or not nif or not num or not fecha_f_str:
-                continue
-            clave = (str(nif).strip().upper(), str(num).strip(), str(fecha_f_str).strip())
-            if clave in claves_vistas:
-                ids_duplicados.add(factura_id)
-                ids_duplicados.add(claves_vistas[clave])
-            else:
-                claves_vistas[clave] = factura_id
-
-        duplicadas_list = []
-        if ids_duplicados:
-            for f in facturas_papel:
-                if f.get('id') in ids_duplicados:
-                    nif = f.get('proveedor_nif')
-                    num = f.get('numero_factura')
-                    fecha_f_str = f.get('fecha_factura')
-                    clave_actual = (str(nif).strip().upper(), str(num).strip(), str(fecha_f_str).strip())
-                    ids_asociados = [f_inner.get('id') for f_inner in facturas_papel if
-                                     (str(f_inner.get('proveedor_nif')).strip().upper(),
-                                      str(f_inner.get('numero_factura')).strip(),
-                                      str(f_inner.get('fecha_factura')).strip()) == clave_actual]
-                    duplicadas_list.append({
-                        "id": f.get('id'),
-                        "numero_factura": num,
-                        "proveedor_nif": nif,
-                        "fecha_factura": fecha_f_str,
-                        "fecha_registro_rcf": f.get('fecha_registro_rcf'),
-                        "ids_duplicados_asociados": sorted(list(set(ids_asociados)))
-                    })
-            resultados["v1_4_duplicadas_potenciales"] = sorted(duplicadas_list, key=lambda x: (x['proveedor_nif'], x['numero_factura'], x['fecha_factura']))
+        # Use the new utility function for duplicate detection
+        resultados["v1_4_duplicadas_potenciales"] = find_potential_duplicate_paper_invoices(facturas_papel)
 
         return jsonify(resultados), 200
 
@@ -166,18 +125,15 @@ def auditar_anotacion_electronica():
         return jsonify({"error": "Servicio no disponible: Sin conexión con la base de datos"}), 503
     try:
         data = request.get_json()
-        if not data or 'fecha_inicio' not in data or 'fecha_fin' not in data:
-            return jsonify({"error": "Faltan parámetros 'fecha_inicio' o 'fecha_fin' en el cuerpo JSON"}), 400
+        # Use parse_date_range for date validation
+        fecha_inicio, fecha_fin, error_response, error_code = parse_date_range(data)
+        if error_response:
+            return error_response, error_code
+
+        # fecha_inicio_str and fecha_fin_str are still needed for Supabase queries
         fecha_inicio_str = data['fecha_inicio']
         fecha_fin_str = data['fecha_fin']
-        try:
-            fecha_inicio = datetime.strptime(fecha_inicio_str, '%Y-%m-%d').date()
-            fecha_fin = datetime.strptime(fecha_fin_str, '%Y-%m-%d').date()
-            if fecha_inicio > fecha_fin:
-                return jsonify({"error": "La fecha de inicio no puede ser posterior a la fecha de fin"}), 400
-        except ValueError:
-            return jsonify({"error": "Formato de fecha inválido. Usar YYYY-MM-DD"}), 400
-
+        
         query_facturas = supabase.table('facturas')\
             .select('id, numero_factura, proveedor_nif, fecha_factura, fecha_presentacion_registro, fecha_registro_rcf')\
             .eq('es_electronica', True)\
@@ -238,12 +194,19 @@ def auditar_validaciones():
         return jsonify({"error": "Servicio no disponible: Sin conexión con la base de datos"}), 503
     try:
         data = request.get_json()
+        # Use parse_date_range for optional date validation
+        fecha_inicio, fecha_fin, error_response, error_code = parse_date_range(data, required=False)
+        if error_response:
+            return error_response, error_code
+
+        # Get string versions if needed for Supabase, can be None
         fecha_inicio_str = data.get('fecha_inicio')
         fecha_fin_str = data.get('fecha_fin')
+
         query = supabase.table('facturas').select('*').eq('es_electronica', True)
-        if fecha_inicio_str:
+        if fecha_inicio_str: # Check if the string date is available
             query = query.gte('fecha_factura', fecha_inicio_str)
-        if fecha_fin_str:
+        if fecha_fin_str: # Check if the string date is available
             query = query.lte('fecha_factura', fecha_fin_str)
         response = query.execute()
         if not hasattr(response, 'data') or (hasattr(response, 'error') and response.error):
@@ -293,14 +256,21 @@ def auditar_tramitacion():
         return jsonify({"error": "Servicio no disponible: Sin conexión con la base de datos"}), 503
     try:
         data = request.get_json()
+        # Use parse_date_range for optional date validation
+        fecha_inicio, fecha_fin, error_response, error_code = parse_date_range(data, required=False)
+        if error_response:
+            return error_response, error_code
+
+        # Get string versions if needed for Supabase, can be None
         fecha_inicio_str = data.get('fecha_inicio')
         fecha_fin_str = data.get('fecha_fin')
+        
         query = supabase.table('facturas')\
             .select('id, numero_factura, proveedor_nif, estado, fecha_factura')\
             .eq('es_electronica', True)
-        if fecha_inicio_str:
+        if fecha_inicio_str: # Check if the string date is available
             query = query.gte('fecha_factura', fecha_inicio_str)
-        if fecha_fin_str:
+        if fecha_fin_str: # Check if the string date is available
             query = query.lte('fecha_factura', fecha_fin_str)
         response = query.execute()
         if not hasattr(response, 'data') or (hasattr(response, 'error') and response.error):

@@ -6,4 +6,7 @@ seaborn
 xlsxwriter
 plotly
 supabase
-
+Flask
+python-dotenv
+requests
+Flask-CORS

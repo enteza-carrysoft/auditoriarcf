@@ -1,10 +1,12 @@
 # backend-app.py
 
 from flask import Flask
+from flask_cors import CORS # Import CORS
 from routes.main_routes import main_bp
 from routes.audit import audit_bp  # Importa el blueprint desde routes/audit/__init__.py
 
 app = Flask(__name__)
+CORS(app) # Enable CORS for all routes
 
 # Registrar blueprints
 app.register_blueprint(main_bp)

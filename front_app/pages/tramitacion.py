@@ -1,132 +1,104 @@
-# pages/tramitacion.py
-
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
-from components.boxes import info_box
-from components.downloads import download_excel
+from datetime import datetime, timedelta
+import requests
+import json
+from ..ui_utils import info_box, warning_box, success_box, download_excel
+from ..config import API_URL_TRAMITACION
 
 def show_tramitacion():
-    st.markdown('<h1 class="main-header">Auditoría de Tramitación</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">Auditoría de Tramitación (Estados)</h1>', unsafe_allow_html=True)
     
     info_box(
         "Información",
-        "Esta sección permite verificar la correcta tramitación de las facturas y analizar los tiempos medios de tramitación."
+        "Esta sección permite verificar que el campo 'estado' de cada factura electrónica esté en un conjunto de valores válidos según la normativa."
     )
-    
-    col1, col2, col3 = st.columns([2, 2, 3])
+
+    # Initialize session state variables
+    if 'tramitacion_data' not in st.session_state:
+        st.session_state.tramitacion_data = {} 
+    if 'df_estado_incorrecto_api' not in st.session_state:
+        st.session_state.df_estado_incorrecto_api = pd.DataFrame()
+    if 'last_update_tramitacion' not in st.session_state:
+        st.session_state.last_update_tramitacion = "N/A"
+
+    # Date inputs and update button
+    col1, col2, col3 = st.columns([1,1,1])
     with col1:
-        st.selectbox("Seleccionar fecha", ["Fecha actual", "Datos históricos"], key="fecha_tipo_tramitacion")
+        fecha_inicio_input_tramitacion = st.date_input("Fecha Inicio (Opcional)", value=None, key="tram_fecha_inicio")
     with col2:
-        if st.button("Actualizar datos", key="actualizar_tramitacion"):
-            st.session_state.datos_actualizados_tramitacion = True
+        fecha_fin_input_tramitacion = st.date_input("Fecha Fin (Opcional)", value=None, key="tram_fecha_fin")
     with col3:
-        st.markdown(
-            '<div style="text-align: right;"><span style="background-color: #E5E7EB; padding: 0.5rem; border-radius: 0.5rem;">Última actualización: 05/04/2025</span></div>',
-            unsafe_allow_html=True
-        )
+        if st.button("Actualizar datos", key="tram_actualizar_tramitacion", use_container_width=True, type="primary"):
+            fecha_inicio_str = fecha_inicio_input_tramitacion.strftime("%Y-%m-%d") if fecha_inicio_input_tramitacion else None
+            fecha_fin_str = fecha_fin_input_tramitacion.strftime("%Y-%m-%d") if fecha_fin_input_tramitacion else None
+            
+            payload = {}
+            proceed_with_call = False
+            if fecha_inicio_str and fecha_fin_str:
+                payload = {"fecha_inicio": fecha_inicio_str, "fecha_fin": fecha_fin_str}
+                proceed_with_call = True
+            elif not fecha_inicio_str and not fecha_fin_str:
+                proceed_with_call = True
+            else: 
+                 st.warning("Por favor, seleccione ambas fechas (Inicio y Fin) o ninguna para auditar todos los datos.")
+                 proceed_with_call = False
+            
+            if proceed_with_call:
+                try:
+                    response = requests.post(API_URL_TRAMITACION, json=payload, timeout=20)
+                    response.raise_for_status()
+                    
+                    api_data = response.json()
+                    st.session_state.tramitacion_data = api_data
+                    
+                    facturas_estado_incorrecto = api_data.get("facturas_con_estado_incorrecto", [])
+                    if facturas_estado_incorrecto:
+                        st.session_state.df_estado_incorrecto_api = pd.DataFrame(facturas_estado_incorrecto)
+                        st.session_state.df_estado_incorrecto_api = st.session_state.df_estado_incorrecto_api.rename(
+                            columns={'id': 'ID Factura', 'numero_factura': 'Número Factura', 'estado': 'Estado Reportado'}
+                        )
+                    else:
+                        st.session_state.df_estado_incorrecto_api = pd.DataFrame(columns=['ID Factura', 'Número Factura', 'Estado Reportado'])
+                    
+                    st.session_state.last_update_tramitacion = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                    success_box(f"Datos actualizados.", f"{api_data.get('total_facturas_tramitacion', 0)} facturas analizadas para estado de tramitación.")
+
+                except requests.exceptions.Timeout:
+                    st.error("Error: Timeout al contactar el backend. Intente nuevamente.")
+                except requests.exceptions.HTTPError as e:
+                    st.error(f"Error al contactar el backend: {e.response.status_code} - {e.response.text}")
+                except requests.exceptions.RequestException as e:
+                    st.error(f"Error de conexión: No se pudo conectar al backend. ({e})")
+                except json.JSONDecodeError:
+                    st.error("Error: La respuesta del backend no es un JSON válido.")
+                except Exception as e:
+                    st.error(f"Ocurrió un error inesperado: {str(e)}")
+                    st.session_state.tramitacion_data = {}
+                    st.session_state.df_estado_incorrecto_api = pd.DataFrame()
+
+    st.markdown(f'<div style="text-align: right; margin-bottom:1rem;"><span style="background-color: #E5E7EB; padding: 0.5rem; border-radius: 0.5rem; font-size: 0.9rem;">Última actualización: {st.session_state.last_update_tramitacion}</span></div>', unsafe_allow_html=True)
     
-    st.markdown('<h2 class="section-header">Comparativa de solicitudes de anulación</h2>', unsafe_allow_html=True)
-    
-    df_solicitudes = pd.DataFrame({
-        "Nº Factura": [],
-        "NIF Emisor": [],
-        "Fecha solicitud": [],
-        "Estado en FACe": [],
-        "Estado en RCF": []
-    })
-    if df_solicitudes.empty:
-        st.write("No hay datos disponibles")
+    st.markdown('<h2 class="section-header">Facturas con Estado de Tramitación Incorrecto</h2>', unsafe_allow_html=True)
+    if not st.session_state.df_estado_incorrecto_api.empty:
+        # Ensure the DataFrame has the expected columns before trying to select them
+        df_display = st.session_state.df_estado_incorrecto_api
+        if 'ID Factura' in df_display.columns and 'Número Factura' in df_display.columns and 'Estado Reportado' in df_display.columns:
+             st.dataframe(df_display[['ID Factura', 'Número Factura', 'Estado Reportado']])
+        else: # Fallback if columns are not as expected (e.g. after an error or if API changes)
+             st.dataframe(df_display)
+        st.markdown(download_excel(st.session_state.df_estado_incorrecto_api, "facturas_estado_incorrecto"), unsafe_allow_html=True)
     else:
-        st.dataframe(df_solicitudes)
-        st.markdown(download_excel(df_solicitudes, "solicitudes_anulacion"), unsafe_allow_html=True)
+        st.info("No se encontraron facturas con estado de tramitación incorrecto para el periodo seleccionado, o no se han cargado datos.")
+
+    st.markdown('<h2 class="section-header">Comparativa de solicitudes de anulación</h2>', unsafe_allow_html=True)
+    warning_box("Información no disponible", "Este análisis no está disponible desde el endpoint actual de tramitación de estados.")
     
     st.markdown('<h2 class="section-header">Tiempos medios de tramitación</h2>', unsafe_allow_html=True)
-    
-    df_tiempos_tramitacion = pd.DataFrame({
-        "Estado": ["Registrada", "Contabilizada", "Conformada", "Pagada"],
-        "Tiempo medio en FACe (días)": [1, 5, 10, 20],
-        "Tiempo medio en RCF (días)": [1, 4, 8, 18],
-        "Diferencia (días)": [0, 1, 2, 2]
-    })
-    st.dataframe(df_tiempos_tramitacion)
-    
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=df_tiempos_tramitacion['Estado'],
-        y=df_tiempos_tramitacion['Tiempo medio en FACe (días)'],
-        name='FACe',
-        marker_color='#3B82F6'
-    ))
-    fig.add_trace(go.Bar(
-        x=df_tiempos_tramitacion['Estado'],
-        y=df_tiempos_tramitacion['Tiempo medio en RCF (días)'],
-        name='RCF',
-        marker_color='#10B981'
-    ))
-    fig.update_layout(
-        title='Comparativa de tiempos medios de tramitación',
-        xaxis_title='Estado',
-        yaxis_title='Tiempo medio (días)',
-        barmode='group',
-        height=500
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    st.markdown(download_excel(df_tiempos_tramitacion, "tiempos_tramitacion"), unsafe_allow_html=True)
+    warning_box("Información no disponible", "Este análisis no está disponible desde el endpoint actual de tramitación de estados.")
     
     st.markdown('<h2 class="section-header">Evolución mensual de tiempos de tramitación</h2>', unsafe_allow_html=True)
-    
-    df_evolucion_tiempos = pd.DataFrame({
-        "Mes": ["Enero", "Febrero", "Marzo", "Abril"],
-        "Tiempo medio hasta contabilización (días)": [4, 3, 3, 2],
-        "Tiempo medio hasta conformidad (días)": [8, 7, 6, 5],
-        "Tiempo medio hasta pago (días)": [20, 18, 16, 15]
-    })
-    st.dataframe(df_evolucion_tiempos)
-    
-    fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(
-        x=df_evolucion_tiempos['Mes'],
-        y=df_evolucion_tiempos['Tiempo medio hasta contabilización (días)'],
-        name='Contabilización',
-        mode='lines+markers',
-        marker_color='#3B82F6'
-    ))
-    fig2.add_trace(go.Scatter(
-        x=df_evolucion_tiempos['Mes'],
-        y=df_evolucion_tiempos['Tiempo medio hasta conformidad (días)'],
-        name='Conformidad',
-        mode='lines+markers',
-        marker_color='#10B981'
-    ))
-    fig2.add_trace(go.Scatter(
-        x=df_evolucion_tiempos['Mes'],
-        y=df_evolucion_tiempos['Tiempo medio hasta pago (días)'],
-        name='Pago',
-        mode='lines+markers',
-        marker_color='#F59E0B'
-    ))
-    fig2.update_layout(
-        title='Evolución mensual de tiempos de tramitación',
-        xaxis_title='Mes',
-        yaxis_title='Tiempo medio (días)',
-        height=500
-    )
-    st.plotly_chart(fig2, use_container_width=True)
-    st.markdown(download_excel(df_evolucion_tiempos, "evolucion_tiempos_tramitacion"), unsafe_allow_html=True)
+    warning_box("Información no disponible", "Este análisis no está disponible desde el endpoint actual de tramitación de estados.")
     
     st.markdown('<h2 class="section-header">Facturas con mayor tiempo de tramitación</h2>', unsafe_allow_html=True)
-    
-    df_facturas_mayor_tiempo = pd.DataFrame({
-        "Nº Factura": [],
-        "NIF Emisor": [],
-        "Razón Social": [],
-        "Fecha Emisión": [],
-        "Fecha Pago": [],
-        "Tiempo total (días)": []
-    })
-    if df_facturas_mayor_tiempo.empty:
-        st.write("No hay datos disponibles")
-    else:
-        st.dataframe(df_facturas_mayor_tiempo)
-        st.markdown(download_excel(df_facturas_mayor_tiempo, "facturas_mayor_tiempo"), unsafe_allow_html=True)
+    warning_box("Información no disponible", "Este análisis no está disponible desde el endpoint actual de tramitación de estados.")
